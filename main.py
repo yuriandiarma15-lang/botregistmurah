@@ -544,6 +544,188 @@ async def send_payment_instruction(
 
 
 # =========================================================
+# TOMBOL ADMIN: TERIMA / TOLAK
+# =========================================================
+
+def admin_proof_keyboard(user_id):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ TERIMA",
+                    callback_data=f"proof_accept:{user_id}"
+                ),
+                InlineKeyboardButton(
+                    text="❌ TOLAK",
+                    callback_data=f"proof_reject:{user_id}"
+                )
+            ]
+        ]
+    )
+
+
+async def check_admin(callback: CallbackQuery):
+    """Hanya ADMIN_ID yang boleh menekan tombol verifikasi."""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer(
+            "❌ Anda tidak memiliki izin.",
+            show_alert=True
+        )
+        return False
+
+    return True
+
+
+# =========================================================
+# ADMIN TERIMA BUKTI
+# =========================================================
+
+@DP.callback_query(F.data.startswith("proof_accept:"))
+async def proof_accept_callback(callback: CallbackQuery):
+
+    if not await check_admin(callback):
+        return
+
+    user_id = callback.data.split(":", 1)[1]
+    payment = pending_payments.get(user_id)
+
+    if not payment:
+        await callback.answer(
+            "❌ Data transaksi tidak ditemukan.",
+            show_alert=True
+        )
+        return
+
+    current_status = payment.get("status", "WAITING_PROOF")
+
+    if current_status == "APPROVED":
+        await callback.answer("Transaksi sudah diterima.", show_alert=True)
+        return
+
+    if current_status == "REJECTED":
+        await callback.answer("Transaksi sudah ditolak.", show_alert=True)
+        return
+
+    payment["status"] = "APPROVED"
+    payment["approved_at"] = datetime.now().isoformat()
+    payment["approved_by"] = callback.from_user.id
+
+    save_payment_state()
+
+    # Hapus tombol supaya tidak bisa ditekan berulang kali.
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception as e:
+        print("[ADMIN BUTTON EDIT ERROR]", e)
+
+    # Ubah caption pesan admin.
+    try:
+        old_caption = callback.message.caption or ""
+        new_caption = old_caption + "\n\n✅ <b>PEMBAYARAN DITERIMA</b>"
+        await callback.message.edit_caption(
+            caption=new_caption,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print("[ADMIN CAPTION EDIT ERROR]", e)
+
+    # Beri tahu user.
+    try:
+        await BOT.send_message(
+            chat_id=int(user_id),
+            text=(
+                "🎉 <b>PAYMENT APPROVED</b> 🎉\n\n"
+                f"📦 Paket: <b>{payment['package']}</b>\n"
+                f"💰 Nominal: <b>{format_rupiah(payment['harga'])}</b>\n\n"
+                "✅ <b>Status pembayaran: APPROVED</b>\n\n"
+                "Pembayaran Anda telah diverifikasi dan disetujui oleh admin.\n\n"
+                "🤖 <b>BOT AI ANDA SUDAH SIAP</b>\n\n"
+                "Silahkan tekan <b>START</b> pada bot AI berikut.\n"
+                "Bot AI tersebut akan menjadi <b>asisten pribadi Anda</b> "
+                "untuk membantu memberikan analisa dan informasi XAUUSD.\n\n"
+                "👉 <a href=\"https://t.me/AIGOLDASSISTANT_BOT\">START @AIGOLDASSISTANT_BOT</a>\n\n"
+                "🚀 Selamat menggunakan layanan XAU AI Intelligence!"
+            ),
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        print("[USER NOTIFY ACCEPT ERROR]", e)
+
+    await callback.answer("✅ Pembayaran diterima.")
+
+
+# =========================================================
+# ADMIN TOLAK BUKTI
+# =========================================================
+
+@DP.callback_query(F.data.startswith("proof_reject:"))
+async def proof_reject_callback(callback: CallbackQuery):
+
+    if not await check_admin(callback):
+        return
+
+    user_id = callback.data.split(":", 1)[1]
+    payment = pending_payments.get(user_id)
+
+    if not payment:
+        await callback.answer(
+            "❌ Data transaksi tidak ditemukan.",
+            show_alert=True
+        )
+        return
+
+    current_status = payment.get("status", "WAITING_PROOF")
+
+    if current_status == "APPROVED":
+        await callback.answer("Transaksi sudah diterima.", show_alert=True)
+        return
+
+    if current_status == "REJECTED":
+        await callback.answer("Transaksi sudah ditolak.", show_alert=True)
+        return
+
+    payment["status"] = "REJECTED"
+    payment["rejected_at"] = datetime.now().isoformat()
+    payment["rejected_by"] = callback.from_user.id
+
+    save_payment_state()
+
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception as e:
+        print("[ADMIN BUTTON EDIT ERROR]", e)
+
+    try:
+        old_caption = callback.message.caption or ""
+        new_caption = old_caption + "\n\n❌ <b>PEMBAYARAN DITOLAK</b>"
+        await callback.message.edit_caption(
+            caption=new_caption,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print("[ADMIN CAPTION EDIT ERROR]", e)
+
+    # Beri tahu user bahwa bukti ditolak.
+    try:
+        await BOT.send_message(
+            chat_id=int(user_id),
+            text=(
+                "❌ <b>BUKTI PEMBAYARAN DITOLAK</b>\n\n"
+                f"📦 Paket: <b>{payment['package']}</b>\n"
+                f"💰 Nominal: <b>{format_rupiah(payment['harga'])}</b>\n\n"
+                "Admin belum dapat memverifikasi bukti pembayaran Anda.\n\n"
+                "Silahkan hubungi admin untuk informasi lebih lanjut."
+            ),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print("[USER NOTIFY REJECT ERROR]", e)
+
+    await callback.answer("❌ Pembayaran ditolak.")
+
+
+# =========================================================
 # USER KIRIM FOTO BUKTI TRANSFER
 # =========================================================
 
@@ -576,6 +758,30 @@ async def proof_photo_handler(message: Message):
             "Silahkan pilih paket di bawah "
             "untuk membuat transaksi baru.",
             reply_markup=package_keyboard(),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # STATUS SUDAH DIVERIFIKASI
+    # -----------------------------------------------------
+
+    if payment.get("status") == "APPROVED":
+
+        await message.answer(
+            "✅ <b>PEMBAYARAN SUDAH DITERIMA</b>\n\n"
+            "Pembayaran Anda sudah diverifikasi oleh admin.",
+            parse_mode="HTML"
+        )
+
+        return
+
+    if payment.get("status") == "REJECTED":
+
+        await message.answer(
+            "❌ <b>BUKTI PEMBAYARAN DITOLAK</b>\n\n"
+            "Silahkan hubungi admin untuk informasi lebih lanjut.",
             parse_mode="HTML"
         )
 
@@ -760,6 +966,7 @@ async def proof_photo_handler(message: Message):
                 chat_id=admin_id,
                 photo=photo.file_id,
                 caption=admin_caption,
+                reply_markup=admin_proof_keyboard(telegram_id),
                 parse_mode="HTML"
             )
 
