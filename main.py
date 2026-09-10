@@ -18,7 +18,7 @@ from aiogram.types import (
 
 from config import (
     BOT_TOKEN,
-    ADMIN_IDS,
+    ADMIN_ID
 )
 
 from spreadsheet import save_member
