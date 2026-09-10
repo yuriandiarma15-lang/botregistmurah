@@ -1,4 +1,3 @@
-```python
 import asyncio
 import json
 import os
@@ -1358,4 +1357,4 @@ if __name__ == "__main__":
         print(
             "Bot stopped."
         )
-```
+
