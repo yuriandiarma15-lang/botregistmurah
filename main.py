@@ -1,13 +1,13 @@
+```python
 import asyncio
+import json
 import os
 import re
 
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F
-
 from aiogram.filters import CommandStart, Command
-
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -18,7 +18,7 @@ from aiogram.types import (
 
 from config import (
     BOT_TOKEN,
-    ADMIN_ID
+    ADMIN_ID,
 )
 
 from spreadsheet import save_member
@@ -40,6 +40,131 @@ DP = Dispatcher()
 # =========================================================
 
 QRIS_PATH = "assets/qris.jpg"
+
+
+# =========================================================
+# PAYMENT STATE
+# =========================================================
+#
+# Status pembayaran disimpan ke file JSON.
+#
+# KEUNTUNGAN:
+# - Tidak hilang saat bot restart
+# - User tetap dikenali setelah memilih paket
+# - Bukti transfer tidak membuat user kembali ke /start
+#
+# =========================================================
+
+PAYMENT_STATE_FILE = "payment_state.json"
+
+
+def load_payment_state():
+    """
+    Membaca data transaksi dari file JSON.
+    """
+
+    if not os.path.exists(PAYMENT_STATE_FILE):
+        return {}
+
+    try:
+        with open(
+            PAYMENT_STATE_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            data = json.load(f)
+
+            if isinstance(data, dict):
+                return data
+
+    except Exception as e:
+
+        print(
+            "Payment state load error:",
+            e
+        )
+
+    return {}
+
+
+def save_payment_state():
+    """
+    Menyimpan payment state secara aman.
+    """
+
+    temp_file = PAYMENT_STATE_FILE + ".tmp"
+
+    try:
+
+        with open(
+            temp_file,
+            "w",
+            encoding="utf-8"
+        ) as f:
+
+            json.dump(
+                pending_payments,
+                f,
+                ensure_ascii=False,
+                indent=2
+            )
+
+        os.replace(
+            temp_file,
+            PAYMENT_STATE_FILE
+        )
+
+    except Exception as e:
+
+        print(
+            "Payment state save error:",
+            e
+        )
+
+
+# =========================================================
+# PAYMENT STATE DI LOAD SAAT BOT START
+# =========================================================
+
+pending_payments = load_payment_state()
+
+print(
+    f"[PAYMENT STATE] "
+    f"{len(pending_payments)} transaksi dimuat."
+)
+
+
+# =========================================================
+# LOCK
+# =========================================================
+
+payment_lock = asyncio.Lock()
+
+
+# =========================================================
+# ADMIN
+# =========================================================
+#
+# config.py menggunakan ADMIN_ID.
+#
+# Bisa berupa:
+#
+# ADMIN_ID = 123456789
+#
+# atau:
+#
+# ADMIN_ID = [123456789, 987654321]
+#
+# =========================================================
+
+if isinstance(ADMIN_ID, (list, tuple, set)):
+
+    ADMIN_IDS = list(ADMIN_ID)
+
+else:
+
+    ADMIN_IDS = [ADMIN_ID]
 
 
 # =========================================================
@@ -76,16 +201,6 @@ PACKAGES = {
 
 
 # =========================================================
-# TEMPORARY PAYMENT DATA
-#
-# User ID ->
-# data paket yang sedang dipilih
-# =========================================================
-
-pending_payments = {}
-
-
-# =========================================================
 # FORMAT RUPIAH
 # =========================================================
 
@@ -113,14 +228,14 @@ def get_user_name(user):
 
 # =========================================================
 # PARSE START PAYLOAD
+# =========================================================
 #
 # JOIN_TRIAL4
-#
 # JOIN_1BLN
 #
 # JOIN_TRIAL4_ref_ABC123
-#
 # JOIN_1BLN_ref_ABC123
+#
 # =========================================================
 
 def parse_start_payload(payload):
@@ -129,9 +244,7 @@ def parse_start_payload(payload):
 
         return None, ""
 
-
     payload = payload.strip()
-
 
     # -----------------------------------------------------
     # TANPA REFERRAL
@@ -141,26 +254,19 @@ def parse_start_payload(payload):
 
         return "TRIAL4", ""
 
-
     if payload.upper() == "JOIN_1BLN":
 
         return "1BLN", ""
-
 
     # -----------------------------------------------------
     # DENGAN REFERRAL
     # -----------------------------------------------------
 
     match = re.match(
-
         r"^JOIN_(TRIAL4|1BLN)_ref_(.+)$",
-
         payload,
-
         re.IGNORECASE
-
     )
-
 
     if match:
 
@@ -168,9 +274,7 @@ def parse_start_payload(payload):
 
         referral = match.group(2).strip()
 
-
         return package_code, referral
-
 
     return None, ""
 
@@ -184,7 +288,6 @@ async def start_handler(message: Message):
 
     payload = ""
 
-
     # -----------------------------------------------------
     # AMBIL PAYLOAD /START
     # -----------------------------------------------------
@@ -195,11 +298,9 @@ async def start_handler(message: Message):
             maxsplit=1
         )
 
-
         if len(parts) > 1:
 
             payload = parts[1].strip()
-
 
     # -----------------------------------------------------
     # CEK PAYLOAD
@@ -209,38 +310,84 @@ async def start_handler(message: Message):
         payload
     )
 
-
     # =====================================================
     # JIKA USER DATANG DARI LANDING PAGE
-    #
-    # Contoh:
-    #
-    # JOIN_TRIAL4
-    #
-    # JOIN_1BLN
-    #
-    # JOIN_TRIAL4_ref_ABC
     # =====================================================
 
     if package_code:
 
         await send_payment_instruction(
-
             message=message,
-
             package_code=package_code,
-
             referral=referral
-
         )
 
         return
 
+    # =====================================================
+    # CEK APAKAH USER MASIH MEMILIKI TRANSAKSI
+    # =====================================================
+
+    user_id = str(message.from_user.id)
+
+    payment = pending_payments.get(user_id)
+
+    if payment:
+
+        status = payment.get(
+            "status",
+            "WAITING_PROOF"
+        )
+
+        # -------------------------------------------------
+        # Bukti sudah dikirim
+        # -------------------------------------------------
+
+        if status == "PROOF_SENT":
+
+            await message.answer(
+
+                "⏳ <b>PEMBAYARAN ANDA SEDANG DIPROSES</b>\n\n"
+
+                f"📦 Paket: <b>{payment['package']}</b>\n"
+                f"💰 Nominal: <b>{format_rupiah(payment['harga'])}</b>\n\n"
+
+                "Bukti transfer sudah diterima dan "
+                "dikirim ke admin.\n\n"
+
+                "Mohon tunggu proses verifikasi.\n"
+                "Anda <b>tidak perlu mengirim /start lagi.</b>",
+
+                parse_mode="HTML"
+            )
+
+            return
+
+        # -------------------------------------------------
+        # Masih menunggu bukti
+        # -------------------------------------------------
+
+        if status == "WAITING_PROOF":
+
+            await message.answer(
+
+                "📸 <b>TRANSAKSI ANDA MASIH AKTIF</b>\n\n"
+
+                f"📦 Paket: <b>{payment['package']}</b>\n"
+                f"💰 Nominal: <b>{format_rupiah(payment['harga'])}</b>\n\n"
+
+                "Silahkan kirim screenshot bukti transfer "
+                "di chat ini.\n\n"
+
+                "Anda tidak perlu memilih paket lagi.",
+
+                parse_mode="HTML"
+            )
+
+            return
 
     # =====================================================
     # /START NORMAL
-    #
-    # TAMPILKAN 2 PILIHAN PAKET
     # =====================================================
 
     keyboard = InlineKeyboardMarkup(
@@ -250,11 +397,8 @@ async def start_handler(message: Message):
             [
 
                 InlineKeyboardButton(
-
                     text="🟢 Trial 4 Hari — Rp34.000",
-
                     callback_data="package_TRIAL4"
-
                 )
 
             ],
@@ -262,11 +406,8 @@ async def start_handler(message: Message):
             [
 
                 InlineKeyboardButton(
-
                     text="🟡 1 Bulan — Rp149.000",
-
                     callback_data="package_1BLN"
-
                 )
 
             ],
@@ -274,7 +415,6 @@ async def start_handler(message: Message):
         ]
 
     )
-
 
     await message.answer(
 
@@ -316,15 +456,10 @@ async def package_callback(
 ):
 
     package_code = callback.data.replace(
-
         "package_",
-
         "",
-
         1
-
     ).upper()
-
 
     # -----------------------------------------------------
     # CEK PAKET
@@ -333,31 +468,22 @@ async def package_callback(
     if package_code not in PACKAGES:
 
         await callback.answer(
-
             "Paket tidak ditemukan.",
-
             show_alert=True
-
         )
 
         return
 
-
     await callback.answer()
-
 
     # -----------------------------------------------------
     # KIRIM QRIS
     # -----------------------------------------------------
 
     await send_payment_instruction(
-
         message=callback.message,
-
         package_code=package_code,
-
         referral=""
-
     )
 
 
@@ -366,13 +492,9 @@ async def package_callback(
 # =========================================================
 
 async def send_payment_instruction(
-
     message: Message,
-
     package_code: str,
-
     referral: str = ""
-
 ):
 
     # -----------------------------------------------------
@@ -383,45 +505,91 @@ async def send_payment_instruction(
         package_code
     )
 
-
     if not package:
 
         await message.answer(
-
             "❌ Paket tidak ditemukan."
-
         )
 
         return
 
-
     user = message.from_user
 
+    user_id = str(user.id)
 
     # -----------------------------------------------------
-    # SIMPAN PAYMENT STATE
+    # CEK TRANSAKSI LAMA
     # -----------------------------------------------------
 
-    pending_payments[user.id] = {
+    async with payment_lock:
 
-        "package_code": package["code"],
+        old_payment = pending_payments.get(
+            user_id
+        )
 
-        "package": package["name"],
+        # Jika sudah ada transaksi aktif
+        if old_payment:
 
-        "harga": package["price"],
+            old_status = old_payment.get(
+                "status",
+                "WAITING_PROOF"
+            )
 
-        "days": package["days"],
+            # Jangan membuat transaksi baru
+            # jika bukti sudah dikirim.
 
-        "referral": referral,
+            if old_status == "PROOF_SENT":
 
-        "telegram_id": user.id,
+                await message.answer(
 
-        "username": user.username or "",
+                    "⏳ <b>TRANSAKSI ANDA MASIH DIPROSES</b>\n\n"
 
-        "nama": get_user_name(user),
+                    f"📦 Paket: <b>{old_payment['package']}</b>\n"
+                    f"💰 Nominal: <b>{format_rupiah(old_payment['harga'])}</b>\n\n"
 
-    }
+                    "Bukti transfer sudah dikirim ke admin.\n"
+                    "Mohon tunggu proses verifikasi.\n\n"
 
+                    "Anda tidak perlu melakukan /start ulang.",
+
+                    parse_mode="HTML"
+                )
+
+                return
+
+        # -------------------------------------------------
+        # SIMPAN PAYMENT STATE
+        # -------------------------------------------------
+
+        pending_payments[user_id] = {
+
+            "package_code": package["code"],
+
+            "package": package["name"],
+
+            "harga": package["price"],
+
+            "days": package["days"],
+
+            "referral": referral,
+
+            "telegram_id": user.id,
+
+            "username": user.username or "",
+
+            "nama": get_user_name(user),
+
+            "status": "WAITING_PROOF",
+
+            "created_at": datetime.now().isoformat(),
+
+        }
+
+        # -------------------------------------------------
+        # LANGSUNG SIMPAN KE FILE
+        # -------------------------------------------------
+
+        save_payment_state()
 
     # -----------------------------------------------------
     # CEK FILE QRIS
@@ -442,7 +610,6 @@ async def send_payment_instruction(
         )
 
         return
-
 
     # -----------------------------------------------------
     # CAPTION QRIS
@@ -476,8 +643,8 @@ async def send_payment_instruction(
 
         "⚠️ Pastikan screenshot bukti transfer "
         "terlihat jelas."
-    )
 
+    )
 
     # -----------------------------------------------------
     # KIRIM QRIS
@@ -486,7 +653,6 @@ async def send_payment_instruction(
     photo = FSInputFile(
         QRIS_PATH
     )
-
 
     await message.answer_photo(
 
@@ -510,24 +676,58 @@ async def proof_photo_handler(
 
     user = message.from_user
 
+    user_id = str(user.id)
 
     # -----------------------------------------------------
     # CEK PAYMENT STATE
     # -----------------------------------------------------
 
     payment = pending_payments.get(
-        user.id
+        user_id
     )
-
 
     if not payment:
 
+        # -------------------------------------------------
+        # FALLBACK:
+        # Jangan hanya menyuruh /start.
+        # Berikan tombol paket.
+        # -------------------------------------------------
+
+        keyboard = InlineKeyboardMarkup(
+
+            inline_keyboard=[
+
+                [
+
+                    InlineKeyboardButton(
+                        text="🟢 Trial 4 Hari — Rp34.000",
+                        callback_data="package_TRIAL4"
+                    )
+
+                ],
+
+                [
+
+                    InlineKeyboardButton(
+                        text="🟡 1 Bulan — Rp149.000",
+                        callback_data="package_1BLN"
+                    )
+
+                ]
+
+            ]
+
+        )
+
         await message.answer(
 
-            "⚠️ <b>Belum ada paket yang dipilih.</b>\n\n"
+            "⚠️ <b>Transaksi tidak ditemukan.</b>\n\n"
 
-            "Silahkan tekan /start terlebih dahulu "
-            "dan pilih paket yang ingin Anda beli.",
+            "Silahkan pilih paket di bawah "
+            "untuk membuat transaksi baru.",
+
+            reply_markup=keyboard,
 
             parse_mode="HTML"
 
@@ -535,13 +735,36 @@ async def proof_photo_handler(
 
         return
 
+    # -----------------------------------------------------
+    # JIKA BUKTI SUDAH PERNAH DIKIRIM
+    # -----------------------------------------------------
+
+    if payment.get("status") == "PROOF_SENT":
+
+        await message.answer(
+
+            "⏳ <b>BUKTI TRANSFER SUDAH DITERIMA</b>\n\n"
+
+            f"📦 Paket: <b>{payment['package']}</b>\n"
+            f"💰 Nominal: <b>{format_rupiah(payment['harga'])}</b>\n\n"
+
+            "Bukti Anda sudah dikirim ke admin "
+            "dan sedang menunggu verifikasi.\n\n"
+
+            "Mohon tunggu. "
+            "Anda tidak perlu mengirim bukti ulang.",
+
+            parse_mode="HTML"
+
+        )
+
+        return
 
     # -----------------------------------------------------
     # FOTO RESOLUSI TERBESAR
     # -----------------------------------------------------
 
     photo = message.photo[-1]
-
 
     # -----------------------------------------------------
     # USER DATA
@@ -552,7 +775,6 @@ async def proof_photo_handler(
     username = user.username or "-"
 
     nama = get_user_name(user)
-
 
     # -----------------------------------------------------
     # PACKAGE DATA
@@ -567,18 +789,15 @@ async def proof_photo_handler(
         ""
     )
 
-
     # -----------------------------------------------------
     # TANGGAL
     # -----------------------------------------------------
 
     now = datetime.now()
 
-
     register_date = now.strftime(
         "%d-%m-%Y"
     )
-
 
     expired_date = (
 
@@ -591,7 +810,6 @@ async def proof_photo_handler(
     ).strftime(
         "%d-%m-%Y"
     )
-
 
     # =====================================================
     # DATA MEMBER
@@ -619,7 +837,6 @@ async def proof_photo_handler(
 
     }
 
-
     print("")
     print("========================================")
     print("BUKTI TRANSFER DITERIMA")
@@ -629,13 +846,11 @@ async def proof_photo_handler(
         member_data
     )
 
-
     # =====================================================
     # SIMPAN KE GOOGLE SHEETS
     # =====================================================
 
     sheet_success = False
-
 
     try:
 
@@ -647,7 +862,6 @@ async def proof_photo_handler(
 
         )
 
-
     except Exception as e:
 
         print(
@@ -655,9 +869,7 @@ async def proof_photo_handler(
             e
         )
 
-
         sheet_success = False
-
 
     # =====================================================
     # REFERRAL TEXT
@@ -672,7 +884,6 @@ async def proof_photo_handler(
         else "-"
 
     )
-
 
     # =====================================================
     # ADMIN CAPTION
@@ -731,15 +942,14 @@ async def proof_photo_handler(
 
         "⚠️ Silahkan periksa bukti transfer "
         "sebelum mengaktifkan akses user."
-    )
 
+    )
 
     # =====================================================
     # KIRIM KE ADMIN
     # =====================================================
 
     admin_sent = False
-
 
     for admin_id in ADMIN_IDS:
 
@@ -757,15 +967,12 @@ async def proof_photo_handler(
 
             )
 
-
             admin_sent = True
-
 
             print(
                 f"[ADMIN] Bukti transfer "
                 f"dikirim ke {admin_id}"
             )
-
 
         except Exception as e:
 
@@ -774,12 +981,40 @@ async def proof_photo_handler(
                 f"{admin_id}: {e}"
             )
 
-
     # =====================================================
-    # BALAS KE USER
+    # JIKA ADMIN BERHASIL MENERIMA
     # =====================================================
 
     if admin_sent:
+
+        # -------------------------------------------------
+        # PENTING:
+        # JANGAN HAPUS pending_payments
+        #
+        # Ubah status menjadi PROOF_SENT.
+        # -------------------------------------------------
+
+        async with payment_lock:
+
+            if user_id in pending_payments:
+
+                pending_payments[user_id][
+                    "status"
+                ] = "PROOF_SENT"
+
+                pending_payments[user_id][
+                    "proof_sent_at"
+                ] = datetime.now().isoformat()
+
+                pending_payments[user_id][
+                    "sheet_success"
+                ] = sheet_success
+
+                save_payment_state()
+
+        # -------------------------------------------------
+        # BALAS KE USER
+        # -------------------------------------------------
 
         await message.answer(
 
@@ -794,37 +1029,50 @@ async def proof_photo_handler(
             "ke admin untuk proses verifikasi.\n\n"
 
             "⏳ Mohon tunggu proses aktivasi "
-            "akses Anda.",
+            "akses Anda.\n\n"
+
+            "✅ <b>Anda tidak perlu menekan /start lagi.</b>",
 
             parse_mode="HTML"
 
         )
 
+    # =====================================================
+    # ADMIN GAGAL MENERIMA
+    # =====================================================
 
     else:
 
+        # -------------------------------------------------
+        # Jangan ubah menjadi PROOF_SENT.
+        # Tetap WAITING_PROOF agar bisa dikirim ulang.
+        # -------------------------------------------------
+
+        async with payment_lock:
+
+            if user_id in pending_payments:
+
+                pending_payments[user_id][
+                    "status"
+                ] = "WAITING_PROOF"
+
+                save_payment_state()
+
         await message.answer(
 
-            "⚠️ Bukti transfer sudah diterima, "
-            "tetapi sistem gagal mengirimkannya "
+            "⚠️ <b>BUKTI TRANSFER SUDAH DITERIMA</b>\n\n"
+
+            "Namun sistem gagal mengirim bukti "
             "ke admin.\n\n"
 
-            "Silahkan hubungi admin."
+            "Silahkan coba kirim bukti transfer "
+            "sekali lagi.\n\n"
+
+            "Anda <b>tidak perlu /start ulang</b>.",
+
+            parse_mode="HTML"
 
         )
-
-
-    # -----------------------------------------------------
-    # HAPUS PAYMENT STATE
-    #
-    # Setelah bukti dikirim, user harus memilih paket
-    # lagi untuk transaksi berikutnya.
-    # -----------------------------------------------------
-
-    pending_payments.pop(
-        user.id,
-        None
-    )
 
 
 # =========================================================
@@ -838,29 +1086,87 @@ async def proof_document_handler(
 
     user = message.from_user
 
+    user_id = str(user.id)
 
     payment = pending_payments.get(
-        user.id
+        user_id
     )
 
+    # -----------------------------------------------------
+    # Kalau transaksi tidak ditemukan
+    # -----------------------------------------------------
 
     if not payment:
 
+        keyboard = InlineKeyboardMarkup(
+
+            inline_keyboard=[
+
+                [
+
+                    InlineKeyboardButton(
+                        text="🟢 Trial 4 Hari — Rp34.000",
+                        callback_data="package_TRIAL4"
+                    )
+
+                ],
+
+                [
+
+                    InlineKeyboardButton(
+                        text="🟡 1 Bulan — Rp149.000",
+                        callback_data="package_1BLN"
+                    )
+
+                ]
+
+            ]
+
+        )
+
         await message.answer(
 
-            "⚠️ Silahkan tekan /start "
-            "dan pilih paket terlebih dahulu."
+            "⚠️ Transaksi tidak ditemukan.\n\n"
+            "Silahkan pilih paket terlebih dahulu.",
+
+            reply_markup=keyboard
 
         )
 
         return
 
+    # -----------------------------------------------------
+    # JIKA SUDAH TERKIRIM
+    # -----------------------------------------------------
+
+    if payment.get("status") == "PROOF_SENT":
+
+        await message.answer(
+
+            "⏳ <b>BUKTI TRANSFER SUDAH DITERIMA</b>\n\n"
+
+            "Bukti sebelumnya sudah dikirim "
+            "ke admin untuk verifikasi.\n\n"
+
+            "Mohon tunggu proses aktivasi.",
+
+            parse_mode="HTML"
+
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # DOCUMENT BUKAN FOTO
+    # -----------------------------------------------------
 
     await message.answer(
 
         "📸 Silahkan kirim "
         "<b>screenshoot/foto bukti transfer</b> "
-        "langsung ke chat ini.",
+        "langsung ke chat ini.\n\n"
+
+        "Jangan kirim sebagai file/document.",
 
         parse_mode="HTML"
 
@@ -878,17 +1184,54 @@ async def text_handler(
 
     user = message.from_user
 
+    user_id = str(user.id)
 
     # -----------------------------------------------------
-    # Jika sedang menunggu bukti transfer
+    # CEK TRANSAKSI
     # -----------------------------------------------------
 
     payment = pending_payments.get(
-        user.id
+        user_id
     )
 
-
     if payment:
+
+        status = payment.get(
+            "status",
+            "WAITING_PROOF"
+        )
+
+        # -------------------------------------------------
+        # BUKTI SUDAH TERKIRIM
+        # -------------------------------------------------
+
+        if status == "PROOF_SENT":
+
+            await message.answer(
+
+                "⏳ <b>TRANSAKSI ANDA SEDANG DIPROSES</b>\n\n"
+
+                f"📦 Paket: <b>{payment['package']}</b>\n"
+
+                f"💰 Nominal: "
+                f"<b>{format_rupiah(payment['harga'])}</b>\n\n"
+
+                "Bukti transfer sudah diterima "
+                "dan dikirim ke admin.\n\n"
+
+                "Mohon tunggu proses verifikasi.\n\n"
+
+                "Anda tidak perlu menekan /start lagi.",
+
+                parse_mode="HTML"
+
+            )
+
+            return
+
+        # -------------------------------------------------
+        # MASIH MENUNGGU BUKTI
+        # -------------------------------------------------
 
         await message.answer(
 
@@ -910,10 +1253,9 @@ async def text_handler(
 
         return
 
-
-    # -----------------------------------------------------
-    # User belum memilih paket
-    # -----------------------------------------------------
+    # =====================================================
+    # USER BELUM MEMILIKI TRANSAKSI
+    # =====================================================
 
     keyboard = InlineKeyboardMarkup(
 
@@ -922,11 +1264,8 @@ async def text_handler(
             [
 
                 InlineKeyboardButton(
-
                     text="🟢 Trial 4 Hari — Rp34.000",
-
                     callback_data="package_TRIAL4"
-
                 )
 
             ],
@@ -934,11 +1273,8 @@ async def text_handler(
             [
 
                 InlineKeyboardButton(
-
                     text="🟡 1 Bulan — Rp149.000",
-
                     callback_data="package_1BLN"
-
                 )
 
             ]
@@ -946,7 +1282,6 @@ async def text_handler(
         ]
 
     )
-
 
     await message.answer(
 
@@ -989,12 +1324,17 @@ async def main():
     print("========================================")
     print("BOT RUNNING")
     print("QRIS:", QRIS_PATH)
+
+    print("PAYMENT STATE:", PAYMENT_STATE_FILE)
+
+    print("TRANSAKSI AKTIF:", len(pending_payments))
+
     print("PACKAGES:")
     print(" - Trial 4 Hari : Rp34.000")
     print(" - 1 Bulan      : Rp149.000")
+
     print("========================================")
     print("")
-
 
     await DP.start_polling(
         BOT
@@ -1018,3 +1358,4 @@ if __name__ == "__main__":
         print(
             "Bot stopped."
         )
+```
