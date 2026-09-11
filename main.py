@@ -194,9 +194,7 @@ pending_payments = load_payment_state()
 # START PAYLOAD PARSER
 # =========================================================
 
-def parse_start_payload(
-    payload
-):
+def parse_start_payload(payload):
 
     payload = (
         payload or ""
@@ -227,14 +225,10 @@ def parse_start_payload(
         code = match.group(1).upper()
 
         return {
-
-            "package":
-                CALLBACK_PACKAGE_MAP.get(
-                    code
-                ),
-
+            "package": CALLBACK_PACKAGE_MAP.get(
+                code
+            ),
             "referral": ""
-
         }
 
 
@@ -255,25 +249,17 @@ def parse_start_payload(
 
         referral = match.group(2).strip()
 
-
         return {
-
-            "package":
-                CALLBACK_PACKAGE_MAP.get(
-                    code
-                ),
-
+            "package": CALLBACK_PACKAGE_MAP.get(
+                code
+            ),
             "referral": referral
-
         }
 
 
     return {
-
         "package": None,
-
         "referral": ""
-
     }
 
 
@@ -305,12 +291,10 @@ def package_keyboard():
 
 
 # =========================================================
-# PAYMENT KEYBOARD
+# ADMIN PAYMENT KEYBOARD
 # =========================================================
 
-def admin_payment_keyboard(
-    user_id
-):
+def admin_payment_keyboard(user_id):
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -376,9 +360,7 @@ async def create_one_time_invite_link():
 # KICK EXPIRED MEMBER
 # =========================================================
 
-async def kick_expired_member(
-    telegram_id
-):
+async def kick_expired_member(telegram_id):
 
     try:
 
@@ -388,7 +370,7 @@ async def kick_expired_member(
 
 
         # -------------------------------------------------
-        # BAN TERLEBIH DAHULU
+        # BAN USER
         # -------------------------------------------------
 
         await BOT.ban_chat_member(
@@ -409,9 +391,8 @@ async def kick_expired_member(
         # -------------------------------------------------
         # UNBAN
         #
-        # Tujuannya seperti KICK biasa.
+        # Membuat efek seperti KICK.
         # User tidak permanent ban.
-        # Jika renew nanti bisa masuk lagi.
         # -------------------------------------------------
 
         try:
@@ -592,7 +573,6 @@ async def check_expired_members():
                         f"{telegram_id} -> EXPIRED"
                     )
 
-
                 else:
 
                     print(
@@ -670,9 +650,7 @@ async def expired_monitor():
 @DP.message(
     CommandStart()
 )
-async def start_handler(
-    message: Message
-):
+async def start_handler(message: Message):
 
     user_id = message.from_user.id
 
@@ -1021,12 +999,6 @@ async def package_callback(
         return
 
 
-    # -----------------------------------------------------
-    # FAKE MESSAGE OBJECT
-    #
-    # Kita kirim instruksi langsung ke chat.
-    # -----------------------------------------------------
-
     user = callback.from_user
 
     username = (
@@ -1243,12 +1215,18 @@ async def payment_proof_handler(
     )
 
 
-    price_text = (
-        f"Rp{int(harga):,}"
-        .replace(",", ".")
-        if str(harga).isdigit()
-        else str(harga)
-    )
+    try:
+
+        price_text = (
+            f"Rp{int(harga):,}"
+            .replace(",", ".")
+        )
+
+    except Exception:
+
+        price_text = str(
+            harga
+        )
 
 
     caption = (
@@ -1450,7 +1428,7 @@ async def approve_payment(
     # GOOGLE SHEETS
     #
     # PENTING:
-    # Reff = grup
+    # REFF / KOLOM I = grup
     # =====================================================
 
     member_data = {
@@ -1494,11 +1472,6 @@ async def approve_payment(
         "status":
             "ACTIVE",
 
-        # -----------------------------------------------
-        # BOT INI KHUSUS GRUP
-        # KOLOM I / REFF = GRUP
-        # -----------------------------------------------
-
         "referral":
             "grup"
 
@@ -1524,7 +1497,7 @@ async def approve_payment(
 
 
     # =====================================================
-    # SAVE SHEET
+    # SAVE GOOGLE SHEET
     # =====================================================
 
     saved = await asyncio.to_thread(
@@ -1550,19 +1523,13 @@ async def approve_payment(
 
 
     # =====================================================
-    # CREATE ONE TIME INVITE
+    # CREATE ONE-TIME INVITE
     # =====================================================
 
     invite_link = await create_one_time_invite_link()
 
 
     if not invite_link:
-
-        # -------------------------------------------------
-        # Member sudah tersimpan ACTIVE.
-        # Tetapi invite gagal dibuat.
-        # Jangan hapus data.
-        # -------------------------------------------------
 
         payment["status"] = "APPROVED"
 
@@ -1583,8 +1550,7 @@ async def approve_payment(
 
                 text=(
 
-                    "✅ <b>Pembayaran kamu sudah "
-                    "DISETUJUI.</b>\n\n"
+                    "✅ <b>Pembayaran kamu sudah DISETUJUI.</b>\n\n"
 
                     f"📦 Paket: <b>{package_name}</b>\n"
 
@@ -1602,6 +1568,7 @@ async def approve_payment(
                 parse_mode="HTML"
 
             )
+
 
         except Exception as e:
 
@@ -1651,35 +1618,61 @@ async def approve_payment(
 
     try:
 
+        harga_value = payment.get(
+            "harga",
+            0
+        )
+
+
+        try:
+
+            harga_text = (
+                f"Rp{int(harga_value):,}"
+                .replace(",", ".")
+            )
+
+        except Exception:
+
+            harga_text = str(
+                harga_value
+            )
+
+
+        # -------------------------------------------------
+        # IMPORTANT:
+        # Buat seluruh text menjadi satu variable.
+        # Ini memperbaiki SyntaxError sebelumnya.
+        # -------------------------------------------------
+
+        success_text = (
+
+            "🎉 <b>PEMBAYARAN BERHASIL!</b>\n\n"
+
+            f"📦 Paket: <b>{package_name}</b>\n"
+
+            f"💰 Harga: <b>{harga_text}</b>\n\n"
+
+            f"📅 Mulai: <b>{register_date}</b>\n"
+
+            f"📅 Expired: <b>{expired_date}</b>\n\n"
+
+            "🔐 <b>JOIN PRIVATE GROUP</b>\n\n"
+
+            f"{invite_link}\n\n"
+
+            "⚠️ Link ini hanya dapat digunakan "
+            "untuk <b>1 member</b>.\n\n"
+
+            "Jangan bagikan link ini kepada orang lain."
+
+        )
+
+
         await BOT.send_message(
 
             chat_id=user_id,
 
-            text=(
-
-                "🎉 <b>PEMBAYARAN BERHASIL!</b>\n\n"
-
-                f"📦 Paket: <b>{package_name}</b>\n"
-
-                f"💰 Harga: <b>Rp"
-                f"{int(payment.get('harga', 0)):,}"
-                .replace(",", ".")
-                f"</b>\n\n"
-
-                f"📅 Mulai: <b>{register_date}</b>\n"
-
-                f"📅 Expired: <b>{expired_date}</b>\n\n"
-
-                "🔐 <b>JOIN PRIVATE GROUP</b>\n\n"
-
-                f"{invite_link}\n\n"
-
-                "⚠️ Link ini hanya dapat digunakan "
-                "untuk <b>1 member</b>.\n\n"
-
-                "Jangan bagikan link ini kepada orang lain."
-
-            ),
+            text=success_text,
 
             parse_mode="HTML"
 
@@ -1925,9 +1918,7 @@ async def cancel_handler(
         )
 
 
-        if status not in (
-            "APPROVED",
-        ):
+        if status != "APPROVED":
 
             payment["status"] = "CANCELLED"
 
@@ -1937,6 +1928,7 @@ async def cancel_handler(
     await message.answer(
 
         "❌ Transaksi dibatalkan.\n\n"
+
         "Gunakan /start untuk memulai kembali."
 
     )
@@ -2026,6 +2018,7 @@ async def main():
     )
 
     print("")
+
     print(
         "PACKAGES:"
     )
@@ -2039,6 +2032,7 @@ async def main():
     )
 
     print("")
+
     print(
         "REFERRAL / REFF:"
     )
@@ -2048,6 +2042,7 @@ async def main():
     )
 
     print("")
+
     print(
         "EXPIRED MONITOR:"
     )
