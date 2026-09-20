@@ -274,14 +274,14 @@ def package_keyboard():
 
             [
                 InlineKeyboardButton(
-                    text="🔥 TRIAL 4 HARI — Rp34.000",
+                    text="🔥 TRIAL 4 HARI — Rp68.000",
                     callback_data="pkg_TRIAL4"
                 )
             ],
 
             [
                 InlineKeyboardButton(
-                    text="⭐ 1 BULAN — Rp149.000",
+                    text="⭐ 1 BULAN — Rp298.000",
                     callback_data="pkg_1BLN"
                 )
             ]
