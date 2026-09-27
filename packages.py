@@ -8,7 +8,7 @@ PACKAGE_MAP = {
 
     "1BLN": {
         "label": "1 Bulan",
-        "price": 298000,
+        "price": 199000,
         "days": 30
     }
 
